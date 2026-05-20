@@ -48,6 +48,9 @@ test('protects routes with an API key and exposes processed data', async () => {
       config: buildTestConfig(),
       repository,
       ingestRunner: async () => ({
+        startedAt: new Date().toISOString(),
+        finishedAt: new Date().toISOString(),
+        durationMs: 0,
         runId: 'run-1',
         correlationId: 'corr-1',
         status: 'completed',
@@ -77,3 +80,4 @@ test('protects routes with an API key and exposes processed data', async () => {
     await pool.end();
   }
 });
+

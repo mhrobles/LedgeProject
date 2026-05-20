@@ -14,6 +14,13 @@ export function startRunQuery(runId: string, correlationId: string, sourceRefere
 }
 
 export function finishRunQuery(runId: string, summary: RunSummary, extra: Record<string, unknown>): QuerySpec {
+  const summaryJson = {
+    ...extra,
+    startedAt: summary.startedAt,
+    finishedAt: summary.finishedAt,
+    durationMs: summary.durationMs
+  };
+
   return {
     text: `
       update ingest_runs
@@ -39,7 +46,7 @@ export function finishRunQuery(runId: string, summary: RunSummary, extra: Record
       summary.warningOrders,
       summary.rejectedOrders,
       summary.exceptionCount,
-      JSON.stringify(extra)
+      JSON.stringify(summaryJson)
     ]
   };
 }

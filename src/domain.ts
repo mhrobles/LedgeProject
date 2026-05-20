@@ -117,6 +117,9 @@ export interface RunSummary {
   runId: string;
   correlationId: string;
   status: 'running' | 'completed' | 'failed';
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number;
   totalOrders: number;
   persistedOrders: number;
   replayedOrders: number;

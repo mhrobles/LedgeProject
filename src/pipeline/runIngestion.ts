@@ -8,6 +8,10 @@ import { normalizeOrder } from './normalize.js';
 import { analyzeConsistency } from './rules.js';
 import { PostgresRepository } from '../infra/repository.js';
 
+function formatDurationSeconds(durationMs: number): string {
+  return (durationMs / 1000).toFixed(3);
+}
+
 export interface RunIngestionDependencies {
   config: AppConfig;
   repository: PostgresRepository;
@@ -29,6 +33,7 @@ export async function processSourceOrders(dependencies: RunIngestionDependencies
   const runId = randomUUID();
   const correlationId = randomUUID();
   const runLogger = logger.child({ runId, correlationId, pipeline: 'northwind-ingest' });
+  const startedAt = new Date();
 
   await dependencies.repository.startRun(runId, correlationId, dependencies.sourceDbPath);
 
@@ -36,6 +41,9 @@ export async function processSourceOrders(dependencies: RunIngestionDependencies
     runId,
     correlationId,
     status: 'running',
+    startedAt: startedAt.toISOString(),
+    finishedAt: null,
+    durationMs: 0,
     totalOrders: 0,
     persistedOrders: 0,
     replayedOrders: 0,
@@ -143,21 +151,37 @@ export async function processSourceOrders(dependencies: RunIngestionDependencies
     }
 
     summary.status = 'completed';
+    const finishedAt = new Date();
+    summary.finishedAt = finishedAt.toISOString();
+    summary.durationMs = finishedAt.getTime() - startedAt.getTime();
+    const durationSeconds = formatDurationSeconds(summary.durationMs);
     await dependencies.repository.finishRun(runId, summary, {
       correlationId,
       sourceDbPath: dependencies.sourceDbPath,
+      startedAt: summary.startedAt,
+      finishedAt: summary.finishedAt,
+      durationMs: summary.durationMs,
+      durationSeconds,
       persistedOrders: summary.persistedOrders,
       duplicateOrders: summary.duplicateOrders
     });
-    runLogger.info({ summary }, 'Ingestion finished');
+    runLogger.info({ summary, durationSeconds: Number(durationSeconds) }, `Ingestion finished in ${durationSeconds}s`);
     return summary;
   } catch (error) {
     summary.status = 'failed';
+    const finishedAt = new Date();
+    summary.finishedAt = finishedAt.toISOString();
+    summary.durationMs = finishedAt.getTime() - startedAt.getTime();
+    const durationSeconds = formatDurationSeconds(summary.durationMs);
     await dependencies.repository.finishRun(runId, summary, {
       correlationId,
+      startedAt: summary.startedAt,
+      finishedAt: summary.finishedAt,
+      durationMs: summary.durationMs,
+      durationSeconds,
       error: error instanceof Error ? error.message : String(error)
     });
-    runLogger.error({ err: error }, 'Ingestion aborted');
+    runLogger.error({ err: error, durationSeconds: Number(durationSeconds), summary }, `Ingestion aborted after ${durationSeconds}s`);
     throw error;
   }
 }
