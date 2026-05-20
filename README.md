@@ -119,7 +119,7 @@ El proceso está separado para que sea fácil de seguir y de revisar:
 2. `validate`: comprueba que los datos tengan sentido.
 3. `normalize`: convierte a minor units y aplica la lógica de moneda.
 4. `dedupe`: detecta replays y duplicados cercanos por ventana temporal + hash.
-5. `consistency-checks`: busca diferencias raras entre totales, descuentos e impuestos.
+5. `consistency-checks`: busca diferencias inusuales entre totales, descuentos e impuestos.
 6. `persist`: guarda el resultado en PostgreSQL.
 7. `serve/query`: expone la información por REST.
 
@@ -127,7 +127,7 @@ El proceso está separado para que sea fácil de seguir y de revisar:
 
 Hay tres reglas importantes ya implementadas:
 
-- `discount_tax_mismatch`: detecta diferencias raras entre descuentos e impuestos esperados y reales.
+- `discount_tax_mismatch`: detecta diferencias inusuales entre descuentos e impuestos esperados y reales.
 - `duplicate_window_hash`: marca duplicados por ventana de 15 minutos + hash del contenido.
 - `multi-currency mock`: convierte importes con una tabla fija de tipos de cambio documentada.
 
@@ -135,8 +135,9 @@ Hay tres reglas importantes ya implementadas:
 
 ### Con Docker
 
+Asumiendo .env ya creado
+
 ```bash
-cp .env.example .env
 docker compose up --build
 ```
 
@@ -185,6 +186,7 @@ npm test
 ## Decisiones y supuestos
 
 - Elegí PostgreSQL directo con migraciones SQL para que el esquema sea visible y sencillo.
+- Se realizó una separación modular a modo de facilitar la ubicación de diferentes funcionalidades
 - Los importes se guardan en minor units para evitar problemas de decimales.
 - Northwind no trae moneda ni impuestos listos para usar, así que esas partes se modelan con reglas fijas y documentadas.
 - La idempotencia se apoya en `source_order_id` para replays exactos y en `duplicateKey` para duplicados lógicos.
@@ -200,7 +202,7 @@ npm test
 ## Threat model breve
 
 - Acceso: las rutas de datos y reingesta usan `x-api-key`.
-- Abuso: sin la clave no se pueden leer datos ni disparar corridas.
+- Abuso: sin la clave no se pueden leer datos ni realizar ejecuciones.
 - Datos: no se versionan secretos; `.env.example` sólo trae valores de ejemplo.
 
 ## Uso de IA
