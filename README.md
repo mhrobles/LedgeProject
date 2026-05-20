@@ -1,43 +1,50 @@
 # LedgeProject
 
-Servicio pequeño para ingerir Northwind SQLite, traducirlo a un modelo canónico de órdenes/líneas, aplicar reglas de negocio, persistir en PostgreSQL con migraciones y exponer una API de solo lectura con reingesta idempotente.
+LedgeProject es un servicio pequeño que toma datos de Northwind, los ordena con un modelo propio y los guarda en PostgreSQL para que luego se puedan consultar desde una API sencilla.
 
-El objetivo es que un revisor pueda ver qué se procesó, qué quedó con excepciones y volver a disparar la ingesta sin duplicar órdenes confirmadas. El proyecto prioriza trazabilidad: pipeline explícito, logs JSON con `runId` y `correlationId`, esquema versionado y decisiones documentadas.
+La idea es que cualquier revisor pueda ver qué pasó en cada corrida, revisar errores o rarezas, y volver a lanzar la ingestión sin que se dupliquen las órdenes ya confirmadas.
+
+## Qué hace
+
+El flujo sigue estos pasos:
+
+1. Lee Northwind SQLite.
+2. Valida que los datos tengan forma razonable.
+3. Los convierte a un modelo canónico de órdenes y líneas.
+4. Detecta duplicados y casos raros.
+5. Guarda todo en PostgreSQL.
+6. Expone una API para consultar resultados, excepciones y corridas.
 
 ## Arquitectura
 
 ```mermaid
 graph TD
-	A[Northwind SQLite<br/>northwind.db read-only] --> B[Ingest]
-	B --> C[Validate]
-	C --> D[Normalize<br/>FX + taxes + money]
-	D --> E[Dedupe<br/>window + hash]
-	E --> F[Consistency checks]
-	F --> G[Persist<br/>PostgreSQL + migrations]
-	G --> H[Serve/query<br/>REST + OpenAPI]
-	G --> I[Exceptions queue]
-	H --> J[Reviewer]
-	I --> J
+  A[Northwind SQLite<br/>solo lectura] --> B[Ingesta]
+  B --> C[Validación]
+  C --> D[Normalización]
+  D --> E[Detección de duplicados]
+  E --> F[Reglas de consistencia]
+  F --> G[Persistencia en PostgreSQL]
+  G --> H[API REST + OpenAPI]
+  G --> I[Lista de excepciones]
+  H --> J[Revisor]
+  I --> J
 ```
-
-## Qué es / problema / usuarios
-
-El servicio toma la base Northwind como fuente fija de referencia, la copia al arranque a un área de runtime y la procesa sin mutar el archivo original. Modela un canónico propio fuerte para `Order` y `Line`, de modo que la persistencia no dependa de la forma original de la fuente.
-
-Está pensado para dos perfiles: un revisor técnico que quiere inspeccionar el pipeline, los datos y las excepciones; y un equipo que necesita una base reproducible para seguir creciendo sobre un flujo de ingesta observable y testable.
 
 ## Fuente Northwind + verificación
 
-Fuente obligatoria usada por el proyecto:
+Fuente obligatoria:
 
 https://raw.githubusercontent.com/jpwhite3/northwind-SQLite3/4f56e7f5906dfd23b25244c5bfe8fb5da6402efd/dist/northwind.db
 
-El archivo se trata como referencia fija. El servicio copia `northwind.db` a `.runtime/northwind.db` al arrancar y trabaja sobre esa copia de solo lectura. El archivo incluido en este repo tiene:
+El archivo no se usa como base mutable. Al arrancar, el servicio lo copia a `.runtime/northwind.db` y trabaja sobre esa copia.
+
+El archivo incluido en este repo tiene:
 
 - Tamaño: `24,702,976` bytes
 - SHA-256: `2F4F5C68DFCD33BA27373EAE48C7A4869800C68095EE0F9F0DA494F83382A877`
 
-Comandos para descargar y verificar manualmente:
+Comprobación manual:
 
 ```bash
 curl -L -o northwind.db https://raw.githubusercontent.com/jpwhite3/northwind-SQLite3/4f56e7f5906dfd23b25244c5bfe8fb5da6402efd/dist/northwind.db
@@ -54,7 +61,9 @@ Get-FileHash .\northwind.db -Algorithm SHA256
 
 ## Modelo canónico
 
-Ejemplo JSON de la forma canónica persistida:
+El servicio no guarda la forma original de Northwind. La traduce a un formato propio más claro para trabajar con órdenes y líneas.
+
+Ejemplo resumido:
 
 ```json
 {
@@ -66,7 +75,6 @@ Ejemplo JSON de la forma canónica persistida:
 	"orderedAtEpoch": 836280000,
 	"currency": "EUR",
 	"fxRateToUsd": 1.08,
-	"sourceCurrency": "USD",
 	"sourceGrossMinor": 157900,
 	"sourceDiscountMinor": 7895,
 	"sourceNetMinor": 150005,
@@ -105,23 +113,23 @@ Ejemplo JSON de la forma canónica persistida:
 
 ## Pipeline
 
-El flujo está implementado de forma explícita y separada:
+El proceso está separado para que sea fácil de seguir y de revisar:
 
-1. `ingest`: carga Northwind SQLite por join y agrupa órdenes con líneas.
-2. `validate`: valida forma y dominio de los registros con esquemas estrictos.
-3. `normalize`: traduce a canónico, convierte moneda con una tabla mock y calcula totales en minor units.
-4. `dedupe`: detecta replays reales y duplicados por ventana temporal + hash de contenido.
-5. `consistency-checks`: verifica reconciliación de descuentos e impuestos tras redondeo.
-6. `persist`: guarda en PostgreSQL con migraciones versionadas.
-7. `serve/query`: expone órdenes, runs y excepciones vía REST con OpenAPI.
+1. `ingest`: lee Northwind y agrupa órdenes con sus líneas.
+2. `validate`: comprueba que los datos tengan sentido.
+3. `normalize`: convierte a minor units y aplica la lógica de moneda.
+4. `dedupe`: detecta replays y duplicados cercanos por ventana temporal + hash.
+5. `consistency-checks`: busca diferencias raras entre totales, descuentos e impuestos.
+6. `persist`: guarda el resultado en PostgreSQL.
+7. `serve/query`: expone la información por REST.
 
-## Reglas de negocio implementadas
+## Reglas de negocio
 
-Las tres reglas pedidas por el enunciado están implementadas así:
+Hay tres reglas importantes ya implementadas:
 
-- `discount_tax_mismatch`: compara la reconciliación de descuentos e impuestos a nivel de línea vs. a nivel de orden después de FX y redondeo.
-- `duplicate_window_hash`: detecta duplicados por ventana temporal de 15 minutos + hash de contenido canónico.
-- `multi-currency mock`: asigna moneda por país de envío y convierte con una tabla fija de tipos de cambio documentada.
+- `discount_tax_mismatch`: detecta diferencias raras entre descuentos e impuestos esperados y reales.
+- `duplicate_window_hash`: marca duplicados por ventana de 15 minutos + hash del contenido.
+- `multi-currency mock`: convierte importes con una tabla fija de tipos de cambio documentada.
 
 ## Quickstart
 
@@ -132,16 +140,17 @@ cp .env.example .env
 docker compose up --build
 ```
 
-La API queda en `http://localhost:3000` y la documentación OpenAPI en `http://localhost:3000/docs`.
+La API queda en `http://localhost:3000`.
+La documentación OpenAPI queda en `http://localhost:3000/docs`.
 
-Disparar una reingesta:
+Disparar una ingestión:
 
 ```bash
 curl -X POST http://localhost:3000/ingestions/run \
 	-H "x-api-key: change-me"
 ```
 
-Consultar órdenes y excepciones:
+Consultar datos:
 
 ```bash
 curl http://localhost:3000/orders -H "x-api-key: change-me"
@@ -163,11 +172,11 @@ npm run dev
 
 La suite cubre:
 
-- reglas puras de moneda, reconciliación y dedupe
-- pipeline con idempotencia real sobre una base PostgreSQL de test en memoria (`pg-mem`)
-- API autenticada con listado de órdenes y excepciones
+- reglas puras de dedupe, moneda y consistencia
+- integración ligera del pipeline con PostgreSQL de pruebas
+- API protegida con clave y consultas básicas
 
-Comando:
+Ejecutar todo:
 
 ```bash
 npm test
@@ -175,32 +184,30 @@ npm test
 
 ## Decisiones y supuestos
 
-- Usé PostgreSQL real para persistencia, pero migraciones SQL propias en lugar de un ORM pesado. La intención fue mantener el esquema explícito y fácil de revisar.
-- El canónico trabaja con minor units enteros para evitar errores de coma flotante.
-- Northwind no trae moneda ni impuestos por orden; por eso la moneda y el tax rate son simulados con tablas documentadas y deterministas por país de envío.
-- La clave natural de idempotencia es `source_order_id` para el replay exacto y `duplicateKey` para el duplicado lógico por ventana + hash.
-- Las órdenes con warnings siguen persistiendo; las duplicadas se registran como excepción y no se duplican.
+- Elegí PostgreSQL directo con migraciones SQL para que el esquema sea visible y sencillo.
+- Los importes se guardan en minor units para evitar problemas de decimales.
+- Northwind no trae moneda ni impuestos listos para usar, así que esas partes se modelan con reglas fijas y documentadas.
+- La idempotencia se apoya en `source_order_id` para replays exactos y en `duplicateKey` para duplicados lógicos.
+- Las órdenes con warnings se guardan; las que son duplicados se registran como excepción y no se duplican.
 
 ## Limitaciones
 
-- No hay UI local; la superficie expuesta es REST + OpenAPI.
-- Los tipos de cambio e impuestos son mock y no deben interpretarse como contabilidad real.
-- La base Northwind es sólo lectura; la copia runtime se crea al arranque.
-- La ingesta completa puede generar muchos registros y logs, por lo que el endpoint de reingesta está pensado para uso de revisión, no para un scheduler agresivo.
+- No hay UI: la forma de revisar el sistema es la API.
+- Los tipos de cambio e impuestos son simulados.
+- La base Northwind se trata como entrada fija de solo lectura.
+- La ingestión completa puede tardar unos segundos y generar bastantes logs.
 
 ## Threat model breve
 
-- Auth: todas las rutas que exponen datos o disparan procesos requieren `x-api-key`.
-- Abuse: una API key inválida no puede leer ni reingresar datos; el replay está protegido por idempotencia de claves naturales y hashes.
-- Datos: no hay secretos versionados; `.env.example` contiene valores de ejemplo y la base Northwind se trata como input fijo de solo lectura.
+- Acceso: las rutas de datos y reingesta usan `x-api-key`.
+- Abuso: sin la clave no se pueden leer datos ni disparar corridas.
+- Datos: no se versionan secretos; `.env.example` sólo trae valores de ejemplo.
 
 ## Uso de IA
 
-Usé GitHub Copilot para acelerar el scaffold, la estructuración modular del pipeline, parte de las pruebas y la redacción inicial de la documentación. Validé manualmente la solución con:
+Usé GitHub Copilot para acelerar partes del scaffold, la separación del pipeline y la documentación inicial. Validé a mano el flujo con:
 
 - `npm run check`
 - `npm test`
 
-También revisé de forma manual la estructura del esquema Northwind y el hash del archivo incluido en el repo.
-
-# LedgeProject
+También revisé manualmente la fuente Northwind, el hash esperado y el comportamiento de la reingesta idempotente.
